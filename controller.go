@@ -91,21 +91,25 @@ func NewHpaController(
 	// TODO: define these as functions elsewhere
 	rsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			if ns, key, err := cache.SplitMetaNamespaceKey(obj); err == nil {
-				glog.Infof("Got add for key: %s in namespace: %s", key, ns)
+			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
+				if ns, name, err := cache.SplitMetaNamespaceKey(key); err == nil {
+					glog.Infof("Got add for key: %s in namespace: %s", name, ns)
 
-				event.key = key
-				event.eventType = "add"
-				c.queue.Add(event)
+					event.key = name
+					event.eventType = "add"
+					c.queue.Add(event)
+				}
 			}
 		},
 		UpdateFunc: func(old, new interface{}) {
-			if ns, key, err := cache.SplitMetaNamespaceKey(old); err == nil {
-				glog.Infof("Got update for key: %s in namespace: %s", key, ns)
+			if key, err := cache.MetaNamespaceKeyFunc(old); err == nil {
+				if ns, name, err := cache.SplitMetaNamespaceKey(key); err == nil {
+					glog.Infof("Got update for key: %s in namespace: %s", name, ns)
 
-				event.key = key
-				event.eventType = "update"
-				c.queue.Add(event)
+					event.key = name
+					event.eventType = "update"
+					c.queue.Add(event)
+				}
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -132,10 +136,6 @@ func (c *HpaController) Run(stopCh <-chan struct{}) { // stopCh only receives
 	defer c.queue.ShutDown()
 
 	glog.Info("Starting Hpa Controller")
-
-	// TODO: Add these to main
-	//go c.rsInformer.Run(stopCh)
-	//go c.hpaInformer.Run(stopCh)
 
 	if !cache.WaitForCacheSync(stopCh, c.rsSynced, c.hpaSynced) {
 		glog.Error("Failed waiting for replica set and hpa caches to sync")

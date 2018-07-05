@@ -27,11 +27,11 @@ func main() {
 	client := kubernetes.NewForConfigOrDie(config)
 	stopCh := make(chan struct{})
 	// resync time
-	sharedInformers := informers.NewSharedInformerFactoryWithOptions(client, 60*time.Minute, WithNamespace(namespace))
+	sharedInformers := informers.NewFilteredSharedInformerFactory(client, 60*time.Minute, namespace, nil)
 	hpaController := NewHpaController(
 		client,
-		sharedInformers.Extensions().V1beta1().ReplicaSets(namespace),
-		sharedInformers.Autoscaling().V2beta1().HorizontalPodAutoscalers(namespace),
+		sharedInformers.Extensions().V1beta1().ReplicaSets(),
+		sharedInformers.Autoscaling().V2beta1().HorizontalPodAutoscalers(),
 	)
 	sharedInformers.Start(stopCh)
 	hpaController.Run(stopCh)
