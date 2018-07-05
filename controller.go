@@ -91,8 +91,8 @@ func NewHpaController(
 	// TODO: define these as functions elsewhere
 	rsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
-				glog.Infof("Got add for key: %s", key)
+			if ns, key, err := cache.SplitMetaNamespaceKey(obj); err == nil {
+				glog.Infof("Got add for key: %s in namespace: %s", key, ns)
 
 				event.key = key
 				event.eventType = "add"
@@ -100,8 +100,8 @@ func NewHpaController(
 			}
 		},
 		UpdateFunc: func(old, new interface{}) {
-			if key, err := cache.MetaNamespaceKeyFunc(old); err == nil {
-				glog.Info("Got update for key: %s", key)
+			if ns, key, err := cache.SplitMetaNamespaceKey(old); err == nil {
+				glog.Infof("Got update for key: %s in namespace: %s", key, ns)
 
 				event.key = key
 				event.eventType = "update"
@@ -190,7 +190,7 @@ func (c *HpaController) processEvent(event Event) error {
 	rs, err := c.rsLister.ReplicaSets(namespace).Get(event.key)
 
 	if err != nil {
-		return fmt.Errorf("Failed to fetch event with key %s from rs lister with error %v", event.key, err)
+		return fmt.Errorf("Failed to fetch event with key: %s from rs lister with error: %v", event.key, err)
 	}
 
 	switch event.eventType {
