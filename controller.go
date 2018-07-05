@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	controllerName    = "hpa-controller"
-	namespace         = "default"
+	controllerName = "hpa-controller"
+	// namespace         = "default"
 	maxRetries        = 3
 	cacheResyncPeriod = 10
 )
@@ -92,7 +92,7 @@ func NewHpaController(
 	rsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
-				glog.Info("Got add for key: %s", key)
+				glog.Infof("Got add for key: %s", key)
 
 				event.key = key
 				event.eventType = "add"

@@ -10,6 +10,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const (
+	namespace = "default"
+)
+
 func main() {
 	// TODO: Add support for passing in a kubeconfig
 
@@ -23,7 +27,7 @@ func main() {
 	client := kubernetes.NewForConfigOrDie(config)
 	stopCh := make(chan struct{})
 	// resync time
-	sharedInformers := informers.NewSharedInformerFactory(client, 60*time.Minute)
+	sharedInformers := informers.NewSharedInformerFactoryWithOptions(client, 60*time.Minute, WithNamespace(namespace))
 	hpaController := NewHpaController(
 		client,
 		sharedInformers.Extensions().V1beta1().ReplicaSets(),
