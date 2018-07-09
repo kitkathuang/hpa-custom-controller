@@ -1,0 +1,39 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpa-custom-controller
+rules:
+- apiGroups:
+  - "extensions"
+  resources:
+  - replicasets 
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - "autoscaling"
+  resources:
+  - horizontalpodautoscalers 
+  verbs:
+  - "*"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hpa-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hpa-custom-controller-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hpa-custom-controller
+subjects:
+- kind: ServiceAccount
+  name: hpa-sa
+  namespace: default
