@@ -1,7 +1,8 @@
 package main
 
 import (
-	"fmt"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/golang/glog"
@@ -27,10 +28,17 @@ import (
 
 const (
 	controllerName = "hpa-controller"
-	// namespace         = "default"
-	maxRetries        = 3
-	cacheResyncPeriod = 10
+
+	// maxRetries is the number of times we will try to process keys from the queue
+	maxRetries = 3
 )
+
+// annotationKeys are the annotations we will look for
+// on replica sets to
+// 1) know if we need to create an hpa for it
+// 2) how to create the hpa.
+// Currently using garbage values for other hpa values.
+var annotationKeys = [4]string{"minReplicas", "maxReplicas", "metricName", "targetValue"}
 
 // Event is the type that we will add to our queues
 type Event struct {
@@ -38,15 +46,26 @@ type Event struct {
 	eventType string
 }
 
+// hpaMeta is just for convenience for when we
+// call the createHpa function
+type hpaMeta struct {
+	minReplicas int32
+	maxReplicas int32
+	metricName  string
+	targetValue string
+}
+
 // HpaController is a custom controller that monitors
-// events related to replica sets and
-// creates, updates, or deletes HPAs accordingly.
+// events (add, update, delete) related to replica sets.
+// It checks for annotations on replica sets, and
+// creates/updates/deletes hpas accordingly.
+// NOTE: Only working on getting create working I'm too lazy to do the rest
 type HpaController struct {
-	// client is a standard kubernetes clientset
 	client kubernetes.Interface
 
-	// *Listers will hit the cache in order to list k8s resources.
-	// *Synced are used to ensure that we wait for caches to sync
+	// * Listers will hit the cache in order to list k8s objects.
+	//   These are so that we don't need to hit the api server.
+	// * Synced is used to ensure that we wait for caches to sync
 	//   before we start processing work.
 	rsLister extlisters.ReplicaSetLister
 	rsSynced cache.InformerSynced
@@ -54,10 +73,8 @@ type HpaController struct {
 	//hpaLister autoscalingListers.HorizontalPodAutoscalerLister
 	hpaSynced cache.InformerSynced
 
-	// queue will store events as they are received by the informer.
-	// It is a rate limiting queue, so that events will be processed
-	// at a certain rate instead of immediately after being received.
-	// queue operations are atomic so multiple workers won't process the same item.
+	// queue will store events (add, update, delete) as they are received by the informer.
+	// Items will be processed at most 3 times before workers give up.
 	queue workqueue.RateLimitingInterface
 
 	// recorder allows us to write Events to k8s objects
@@ -88,7 +105,6 @@ func NewHpaController(
 		recorder: recorder,
 	}
 
-	// TODO: define these as functions elsewhere
 	rsInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
@@ -113,6 +129,11 @@ func NewHpaController(
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
+			// DeletionHandlingMetaNamespaceKeyFunc will check for "DeletedFinalStateUnknown",
+			// which we get when the informer's watcher missed the deletion event.
+			// On the next re-list, a "DeletedFinalStateUnknown" will get placed
+			// into the queue. In this case, we do not know the final state of
+			// the object before it got deleted.
 			if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
 				glog.Info("Got delete for key: %s", key)
 
@@ -130,8 +151,7 @@ func NewHpaController(
 }
 
 // Run starts the controller
-// Make this return an error and catch it in main probably
-func (c *HpaController) Run(stopCh <-chan struct{}) { // stopCh only receives
+func (c *HpaController) Run(stopCh <-chan struct{}) {
 	runtime.HandleCrash() // this will be removed eventually
 	defer c.queue.ShutDown()
 
@@ -175,10 +195,15 @@ func (c *HpaController) processNext() bool {
 	if err == nil {
 		c.queue.Forget(event)
 	} else if c.queue.NumRequeues(event) < maxRetries {
-		glog.Infof("Retrying event %s after receiving error %v. At retry %d of %d max retries.", event.(Event).key, err, c.queue.NumRequeues(event), maxRetries)
+		glog.Infof("Retrying event %s after receiving error %v. At retry %d of %d max retries.",
+			event.(Event).key,
+			err,
+			c.queue.NumRequeues(event),
+			maxRetries)
 		c.queue.AddRateLimited(event)
 	} else {
-		glog.Errorf("Reached max retries processing event %s - returned with error %v. Will stop processing.", event.(Event).key, err)
+		glog.Errorf("Reached max retries processing event %s - returned with error %v. Will stop processing.",
+			event.(Event).key, err)
 		c.queue.Forget(event)
 		runtime.HandleError(err)
 	}
@@ -189,17 +214,20 @@ func (c *HpaController) processNext() bool {
 func (c *HpaController) processEvent(event Event) error {
 	rs, err := c.rsLister.ReplicaSets(namespace).Get(event.key)
 
+	data, err := getHpaDataFromAnnotations(rs)
+
 	if err != nil {
-		return fmt.Errorf("Failed to fetch event with key: %s from rs lister with error: %v", event.key, err)
+		return err
 	}
 
 	switch event.eventType {
 	case "add":
-		err := c.createNewHpa(event.key, rs)
+		err := c.createNewHpa(event.key, rs, data)
 		return err
 
 	case "update":
-		glog.Info("Ignoring update to replica set %s", event.key) // although would want to check for disables (replicas==0...)
+		// although would want to check for disables (replicas==0...)
+		glog.Info("Ignoring update to replica set %s", event.key)
 		return nil
 
 	case "delete":
@@ -210,12 +238,58 @@ func (c *HpaController) processEvent(event Event) error {
 	return nil
 }
 
+func getHpaDataFromAnnotations(rs *ext_v1beta1.ReplicaSet) (*hpaMeta, error) {
+	var minReplicas int32
+	var maxReplicas int32
+	var metricName string
+	var targetValue string
+
+	for _, key := range annotationKeys {
+		if val, ok := rs.Annotations[key]; ok {
+			if key == "minReplicas" {
+				i, err := strconv.ParseInt(val, 10, 32)
+
+				if err != nil {
+					return nil, err
+				}
+
+				i32 := int32(i)
+				minReplicas = i32
+			} else if key == "maxReplicas" {
+				i, err := strconv.ParseInt(val, 10, 32)
+
+				if err != nil {
+					return nil, err
+				}
+
+				i32 := int32(i)
+				maxReplicas = i32
+			} else if key == "metricName" {
+				metricName = val
+			} else {
+				targetValue = val
+			}
+		} else {
+			err := "Replica set is missing annotation " + key
+			return nil, errors.New(err)
+		}
+	}
+
+	return &hpaMeta{
+		minReplicas: minReplicas,
+		maxReplicas: maxReplicas,
+		metricName:  metricName,
+		targetValue: targetValue,
+	}, nil
+
+}
+
 // TODO: Remember to pass copies of things from cache
-// TODO: Make a wrapper function around this so we can just pass min/max/annotations
-func (c *HpaController) createNewHpa(rsName string, rs *ext_v1beta1.ReplicaSet) error {
+func (c *HpaController) createNewHpa(rsName string, rs *ext_v1beta1.ReplicaSet, data *hpaMeta) error {
 	hpaClient := c.client.AutoscalingV2beta1().HorizontalPodAutoscalers(namespace)
 
 	minReplicas := *rs.Spec.Replicas
+
 	//targetAvg := int32(10)
 
 	// TODO: split this up into multiple functions
@@ -235,20 +309,20 @@ func (c *HpaController) createNewHpa(rsName string, rs *ext_v1beta1.ReplicaSet) 
 				Name:       rsName,               //string
 				APIVersion: "extensions/v1beta1", //string
 			},
-			MinReplicas: &minReplicas, //*int32
-			MaxReplicas: 10,           //int32 TODO use annotation
+			MinReplicas: &minReplicas,     //*int32
+			MaxReplicas: data.maxReplicas, //int32 TODO use annotation
 			Metrics: []autoscaling_v2beta1.MetricSpec{ //[]MetricSpec
 				{
-					Type: "", //string? TODO use annotation
+					Type: "Object", //string? TODO use annotation
 					Object: &autoscaling_v2beta1.ObjectMetricSource{
 						Target: autoscaling_v2beta1.CrossVersionObjectReference{
-							Kind:       "", //string
-							Name:       "", //string
-							APIVersion: "", //string
+							Kind: "Service",      //string
+							Name: "fake-service", //string
+							//APIVersion: "", //string optional
 						},
-						MetricName: "someMetric", //string
+						MetricName: data.metricName, //string
 						TargetValue: resource.Quantity{
-							Format: "1000m",
+							Format: resource.Format(data.targetValue),
 						},
 					},
 				},

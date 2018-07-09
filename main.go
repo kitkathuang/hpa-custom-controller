@@ -11,12 +11,16 @@ import (
 )
 
 const (
-	namespace = "default"
+	namespace         = "default"
+	cacheResyncPeriod = 10 // resync caches every 10 minutes
 )
 
 func main() {
-	// TODO: Add support for passing in a kubeconfig
 
+	// TODO: Add support for passing in a kubeconfig.
+	// As of right now, using InClusterConfig, the controller expects to be run
+	// in a pod within the cluster. It will use the service account passed into
+	// the container for auth.
 	config, err := rest.InClusterConfig()
 
 	if err != nil {
@@ -25,14 +29,19 @@ func main() {
 	}
 
 	client := kubernetes.NewForConfigOrDie(config)
-	stopCh := make(chan struct{})
-	// resync time
-	sharedInformers := informers.NewFilteredSharedInformerFactory(client, 60*time.Minute, namespace, nil)
+
+	// Limit informers so they only get events about
+	// replica sets and hpas in the "default" namespace
+	sharedInformers := informers.NewFilteredSharedInformerFactory(client, cacheResyncPeriod*time.Minute, namespace, nil)
+
 	hpaController := NewHpaController(
 		client,
 		sharedInformers.Extensions().V1beta1().ReplicaSets(),
 		sharedInformers.Autoscaling().V2beta1().HorizontalPodAutoscalers(),
 	)
+
+	stopCh := make(chan struct{})
+
 	sharedInformers.Start(stopCh)
 	hpaController.Run(stopCh)
 }
