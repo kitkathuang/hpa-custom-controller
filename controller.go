@@ -227,7 +227,7 @@ func (c *HpaController) processEvent(event Event) error {
 
 	case "update":
 		// although would want to check for disables (replicas==0...)
-		glog.Info("Ignoring update to replica set %s", event.key)
+		glog.Infof("Ignoring update to replica set %s", event.key)
 		return nil
 
 	case "delete":
@@ -289,6 +289,11 @@ func (c *HpaController) createNewHpa(rsName string, rs *ext_v1beta1.ReplicaSet, 
 	hpaClient := c.client.AutoscalingV2beta1().HorizontalPodAutoscalers(namespace)
 
 	minReplicas := *rs.Spec.Replicas
+	targetVal, err := resource.ParseQuantity(data.targetValue)
+
+	if err != nil {
+		return err
+	}
 
 	//targetAvg := int32(10)
 
@@ -320,10 +325,8 @@ func (c *HpaController) createNewHpa(rsName string, rs *ext_v1beta1.ReplicaSet, 
 							Name: "fake-service", //string
 							//APIVersion: "", //string optional
 						},
-						MetricName: data.metricName, //string
-						TargetValue: resource.Quantity{
-							Format: resource.Format(data.targetValue),
-						},
+						MetricName:  data.metricName, //string
+						TargetValue: targetVal,
 					},
 				},
 			},
